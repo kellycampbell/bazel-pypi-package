@@ -3,90 +3,22 @@
 
 _SETUP_PY_TEMPLATE = """from setuptools import setup
 
-def readme():
-    with open("{long_description}") as f:
-        return f.read()
-
 setup(
     name = "{name}",
     version = "{version}",
     description = "{description}",
-    long_description = readme(),
-    classifiers = [{classifiers}],
-    keywords = "{keywords}",
     url = "{url}",
-    author = "{author}",
-    author_email = "{author_email}",
     license = "{license}",
     packages=[{packages}],
     install_requires=[{install_requires}],
-    test_suite = "{test_suite}",
-    tests_require=[{tests_require}],
-    zip_safe=False,
 )
 """
 
-_MANIFEST_IN_TEMPLATE = """include {long_description}"""
 
-_REGISTER_INVOKER_TEMPLATE = """
-#/bin/bash
-
-for key in "$$@"
-do
-  case $$key in
-    --pypi_user=*)
-      user="$${key#*=}"
-      shift
-      ;;
-    --pypi_pass=*)
-      pass="$${key#*=}"
-      shift
-      ;;
-  esac
-done
-
-# Painful levels of embedding.
-cat << EOF > .pypirc
-[distutils]
-index-servers = pypi
-
-[pypi]
-repository = https://pypi.python.org/pypi
-username = $$user
-password = $$pass
-EOF
-
-HOME=`pwd` python setup.py register -r pypi
-
-rm .pypirc
-"""
-
-_UPLOAD_INVOKER_TEMPLATE = """
-#/bin/bash
-
-for key in "$$@"
-do
-  case $$key in
-    --pypi_user=*)
-      user="$${key#*=}"
-      shift
-      ;;
-    --pypi_pass=*)
-      pass="$${key#*=}"
-      shift
-      ;;
-  esac
-done
-
-python setup.py sdist
-python setup.py bdist_wheel
-twine upload dist/* -u $$user -p $$pass
-"""
-
-def pypi_package(name, version, description, long_description, classifiers, keywords, url,
-                 author, author_email, license, packages, install_requires = [],
+def pypi_package(name, version, description, long_description,
+                 license, packages, install_requires = [], url = "",
                  test_suite = "nose.collector", tests_require = ["nose"],
-		 visibility=["//visibility:public"]):
+                 visibility=["//visibility:public"]):
     """A `pypi_package` is a python package and modulates interaction with the PyPi repository.
 
     The arguments to this rule correspond to the ones for the `setup` function from 
@@ -127,73 +59,41 @@ def pypi_package(name, version, description, long_description, classifiers, keyw
 
     short_name = name[0:-4]
 
+    # Generate the setup.py from the template
     setup_py = _SETUP_PY_TEMPLATE.format(
         name = short_name,
         version = version,
         description = description,
-        long_description=long_description,
-        classifiers = ', '.join(['"%s"' % c for c in classifiers]),
-        keywords = keywords,
         url = url,
-        author = author,
-        author_email = author_email,
-	packages = ', '.join(['"%s"' % p[1:] for p in packages]),
-	install_requires = ', '.join(['"%s"' % _translate_package_name(i) for i in install_requires]),
+        packages = ', '.join(['"%s"' % p[1:] for p in packages]),
+        install_requires = ', '.join(['"%s"' % _translate_package_name(i) for i in install_requires]),
         license = license,
-        test_suite = test_suite,
-        tests_require = ', '.join(['"%s"' % _translate_package_name(r) for r in tests_require])
     )
 
-    manifest_in = _MANIFEST_IN_TEMPLATE.format(
-        long_description = long_description,
-    )
-
-    register_invoker = _REGISTER_INVOKER_TEMPLATE
-
-    upload_invoker = _UPLOAD_INVOKER_TEMPLATE
+    print("Writing setup.py: " + setup_py)
 
     native.genrule(
         name = name,
         srcs = packages + [long_description],
-        outs = ["setup.py", "MANIFEST.in"],
+        outs = ["setup.py"],
         cmd = ("echo '%s' > $(location setup.py)" % setup_py) + 
-            (" && echo '%s' > $(location MANIFEST.in)" % manifest_in) +
             (" && mkdir -p $(GENDIR)/%s" % short_name) +
             (" && cp $(SRCS) $(GENDIR)/%s" % short_name) +
             (" && mv $(GENDIR)/%s/%s $(GENDIR)" % (short_name, long_description)),
-	visibility = visibility,
+        visibility = visibility,
     )
 
     native.genrule(
-        name = short_name + "_register_invoker",
-	srcs = [":" + name],
-	outs = ["register_invoker.sh"],
-	cmd = ("echo '%s' > $(location register_invoker.sh)" % register_invoker),
-	visibility = visibility,
+        name = short_name + "_sdist",
+        srcs = packages + [":" + name],
+        # data = packages + [":" + name, long_description],
+        outs = [short_name + ".egg"],
+        cmd = ("echo SRCS=$(SRCS) && pwd " ) +
+            (" && mkdir -p $(GENDIR)/%s" % short_name) +
+            ("&& echo copy $(SRCS) $(GENDIR)/%s/ && cp $(SRCS) $(GENDIR)/%s/" % (short_name, short_name)) +
+            ("&& echo sdist && cd $(GENDIR)/%s/ && DISTUTILS_DEBUG=True python setup.py sdist" % short_name),
+        visibility = visibility,
     )
-
-    native.sh_binary(
-        name = short_name + "_register",
-	srcs = [":" + short_name + "_register_invoker"],
-	data = packages + [":" + name, long_description],
-	visibility = visibility,
-    )
-
-    native.genrule(
-        name = short_name + "_upload_invoker",
-	srcs = [":" + name],
-	outs = ["upload_invoker.sh"],
-	cmd = ("echo '%s' > $(location upload_invoker.sh)" % upload_invoker),
-	visibility = visibility,
-    )
-
-    native.sh_binary(
-        name = short_name + "_upload",
-	srcs = [":" + short_name + "_upload_invoker"],
-	data = packages + [":" + name, long_description],
-	visibility = visibility,
-    )
-
 
 def _translate_package_name(name):
     if not name.endswith('_pkg'):
